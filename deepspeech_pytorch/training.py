@@ -268,6 +268,10 @@ def train(cfg):
         print('Validation Summary Epoch: [{0}]\t'
               'Average WER {wer:.3f}\t'
               'Average CER {cer:.3f}\t'.format(epoch + 1, wer=wer, cer=cer))
+        with open('val_log.txt', 'a') as f:
+            f.write('Validation Summary Epoch: [{0}]\t'
+                  'Average WER {wer:.3f}\t'
+                  'Average CER {cer:.3f}\n'.format(epoch + 1, wer=wer, cer=cer))
 
         if main_proc and cfg.visualization.visdom:
             visdom_logger.update(epoch, state.result_state)
