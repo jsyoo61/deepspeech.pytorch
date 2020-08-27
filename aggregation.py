@@ -5,8 +5,8 @@ import torch.nn as nn
 # %%
 def aggregation(model_source, model_target, weight = None):
     '''
-    model_source: Single nn.Model instance
-    model_target: List of nn.Model instances
+    model_source: List of nn.Model instances
+    model_target: Single nn.Model instance
     weights: default = None
         List of numbers. Must match the number of model_source.
         If None, then weight is set as 1/len(model_source)
@@ -26,7 +26,20 @@ def aggregation(model_source, model_target, weight = None):
 
         # 2. Add weighted sum
         for p_src, w in zip(p_src_tuple, weight):
-            p_trg.data += w * p_src.data.to(device)
+            p_trg.data += (w * p_src.data).to(device)
+
+def distribution(model_source, model_target):
+    '''
+    model_source: Single nn.Model instance
+    model_target: List of nn.Model instance
+    '''
+    for parameters in zip(model_source.parameters(), *[model.parameters() for model in model_target]):
+        p_src = parameters[0]
+        p_trg_tuple = parameters[1:]
+
+        for p_trg in p_trg_tuple:
+            device = p_trg.device
+            p_trg.data[:] = p_src.data.to(device)
 
 # %%
 class m(nn.Module):
@@ -46,6 +59,8 @@ print(model_target.x.weight.data)
 aggregation(model_source, model_target)
 # %%
 print(model_target.x.weight.data)
+# %%
+distribution(model_target, model_source)
 # %%
 
 y.x.weight.data

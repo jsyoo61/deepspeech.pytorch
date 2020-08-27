@@ -24,6 +24,7 @@ from deepspeech_pytorch.state import TrainingState
 from deepspeech_pytorch.testing import run_evaluation
 from deepspeech_pytorch.utils import check_loss
 
+import copy
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -151,27 +152,48 @@ def train(cfg):
                                   num_workers=cfg.data.num_workers,
                                   batch_size=cfg.data.batch_size)
 
+    n_E = 4
+    edge_model_list = [copy.deepcopy(model) for i in range(n_E)]
+    for i, edge_model in enumerate(edge_model_list):
+        device_num = i % torch.cuda.device_count()
+        edge_model.cuda(device_num)
+        print(f'model No:{i}, device No:{next(edge_model.parameters()).device}')
     model = model.to(device)
-    parameters = model.parameters()
-    if OmegaConf.get_type(cfg.optim) is SGDConfig:
-        optimizer = torch.optim.SGD(parameters,
-                                    lr=cfg.optim.learning_rate,
-                                    momentum=cfg.optim.momentum,
-                                    nesterov=True,
-                                    weight_decay=cfg.optim.weight_decay)
-    elif OmegaConf.get_type(cfg.optim) is AdamConfig:
-        optimizer = torch.optim.AdamW(parameters,
-                                      lr=cfg.optim.learning_rate,
-                                      betas=cfg.optim.betas,
-                                      eps=cfg.optim.eps,
-                                      weight_decay=cfg.optim.weight_decay)
-    else:
-        raise ValueError("Optimizer has not been specified correctly.")
 
-    model, optimizer = amp.initialize(model, optimizer,
-                                      enabled=not cfg.training.no_cuda,
-                                      opt_level=cfg.apex.opt_level,
-                                      loss_scale=cfg.apex.loss_scale)
+    parameters = model.parameters()
+    edge_optimizer_list = []
+    for edge_model in edge_model_list:
+        if OmegaConf.get_type(cfg.optim) is SGDConfig:
+            optimizer = torch.optim.SGD(parameters,
+                                        lr=cfg.optim.learning_rate,
+                                        momentum=cfg.optim.momentum,
+                                        nesterov=True,
+                                        weight_decay=cfg.optim.weight_decay)
+        elif OmegaConf.get_type(cfg.optim) is AdamConfig:
+            optimizer = torch.optim.AdamW(parameters,
+                                          lr=cfg.optim.learning_rate,
+                                          betas=cfg.optim.betas,
+                                          eps=cfg.optim.eps,
+                                          weight_decay=cfg.optim.weight_decay)
+        else:
+            raise ValueError("Optimizer has not been specified correctly.")
+
+        edge_optimizer_list.append(optimizer)
+
+    edge_model_list_ = []
+    edge_optimizer_list_ = []
+    for edge_model, optimizer in zip(edge_model_list, edge_optimizer_list):
+        edge_model, optimizer = amp.initialize(edge_model, optimizer,
+                                          enabled=not cfg.training.no_cuda,
+                                          opt_level=cfg.apex.opt_level,
+                                          loss_scale=cfg.apex.loss_scale)
+
+        edge_model_list_.append(edge_model)
+        edge_optimizer_list_.append(optimizer)
+    edge_model_list = edge_model_list_
+    edge_optimizer_list = edge_optimizer_list_
+    del edge_model_list_, edge_optimizer_list_
+
     if state.optim_state is not None:
         optimizer.load_state_dict(state.optim_state)
     if state.amp_state is not None:
@@ -199,52 +221,100 @@ def train(cfg):
         state.set_epoch(epoch=epoch)
         train_sampler.set_epoch(epoch=epoch)
         train_sampler.reset_training_step(training_step=state.training_step)
+
+        distribution(model, edge_model_list)
+        inputs_list = []
+        input_sizes_list = []
+        targets_list = []
+        target_sizes_list = []
         for i, (data) in enumerate(train_loader, start=state.training_step):
             state.set_training_step(training_step=i)
             inputs, targets, input_percentages, target_sizes = data
             input_sizes = input_percentages.mul_(int(inputs.size(3))).int()
             # measure data loading time
             data_time.update(time.time() - end)
-            inputs = inputs.to(device)
 
-            out, output_sizes = model(inputs, input_sizes)
-            out = out.transpose(0, 1)  # TxNxH
+            inputs_list.append(inputs)
+            input_sizes_list.append(input_sizes)
+            targets_list.append(targets)
+            target_sizes_list.append(target_sizes)
+            if len(inputs_list) < n_E:
+                end = time.time()
+                continue
+            assert len(inputs_list) == n_E
+            assert len(inputs_sizes_list) == n_E
+            assert len(targets_list) == n_E
+            assert len(target_sizes_list) == n_E
 
-            float_out = out.float()  # ensure float32 for loss
-            loss = criterion(float_out, targets, output_sizes, target_sizes).to(device)
-            loss = loss / inputs.size(0)  # average the loss by minibatch
-            loss_value = loss.item()
+            loss_list = []
+            loss_value_list = []
+            for inputs, input_sizes, targets, target_sizes, edge_model in zip(inputs_list, input_sizes_list, targets_list, target_sizes_list, edge_model_list):
+                device = next(edge_model.parameters()).device
+                # To utilize default streams on different devices
+                with torch.cuda.device(device):
+                    print(torch.cuda.current_stream())
+                    inputs = inputs.to(device)
+                    targets = targets.to(device)
 
-            # Check to ensure valid loss was calculated
-            valid_loss, error = check_loss(loss, loss_value)
-            if valid_loss:
-                optimizer.zero_grad()
+                    out, output_sizes = model(inputs, input_sizes)
+                    out = out.transpose(0, 1)  # TxNxH
 
-                # compute gradient
-                with amp.scale_loss(loss, optimizer) as scaled_loss:
-                    scaled_loss.backward()
-                torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), cfg.optim.max_norm)
-                optimizer.step()
-            else:
-                print(error)
-                print('Skipping grad update')
-                loss_value = 0
+                    float_out = out.float()  # ensure float32 for loss
+                    # loss = criterion(float_out, targets, output_sizes, target_sizes).to(device)
+                    loss = criterion(float_out, targets, output_sizes, target_sizes)
+                    loss = loss / inputs.size(0)  # average the loss by minibatch
+                    loss_value = loss.item()
 
-            state.avg_loss += loss_value
-            losses.update(loss_value, inputs.size(0))
+                    loss_list.append(loss)
+                    loss_value_list.append(loss_value)
+
+            loss_value_list_ = []
+            for loss, loss_value, optimizer in zip(loss_list, loss_value_list, edge_optimizer_list):
+                device = loss.device
+                with torch.cuda.device(device):
+                    print(torch.cuda.current_stream())
+                    # Check to ensure valid loss was calculated
+                    valid_loss, error = check_loss(loss, loss_value)
+                    if valid_loss:
+                        optimizer.zero_grad()
+
+                        # compute gradient
+                        with amp.scale_loss(loss, optimizer) as scaled_loss:
+                            scaled_loss.backward()
+                        torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), cfg.optim.max_norm)
+                        optimizer.step()
+                    else:
+                        print(error)
+                        print('Skipping grad update')
+                        loss_value = 0
+                    loss_value_list_.append(loss_value)
+            loss_value_list = loss_value_list_
+            del loss_value_list_
 
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
-            print('Epoch: [{0}][{1}/{2}]\t'
-                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                  'Loss {loss.val:.4f} ({loss.avg:.4f})\t'.format(
-                (epoch + 1), (i + 1), len(train_loader), batch_time=batch_time, data_time=data_time, loss=losses))
+
+            for loss_value, inputs in zip(loss_value_list, inputs_list):
+                state.avg_loss += loss_value
+                losses.update(loss_value, inputs.size(0))
+
+                print('Epoch: [{0}][{1}/{2}]\t'
+                      'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                      'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
+                      'Loss {loss.val:.4f} ({loss.avg:.4f})\t'.format(
+                    (epoch + 1), (i + 1), len(train_loader), batch_time=batch_time, data_time=data_time, loss=losses))
 
             if main_proc and cfg.checkpointing.checkpoint_per_iteration:
                 checkpoint_handler.save_iter_checkpoint_model(epoch=epoch, i=i, state=state)
             del loss, out, float_out
+
+            inputs_list = []
+            input_sizes_list = []
+            targets_list = []
+            target_sizes_list = []
+
+        aggregation(edge_model_list, model)
 
         state.avg_loss /= len(train_dataset)
 
