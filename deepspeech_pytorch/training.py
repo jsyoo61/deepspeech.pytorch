@@ -23,8 +23,10 @@ from deepspeech_pytorch.model import DeepSpeech, supported_rnns
 from deepspeech_pytorch.state import TrainingState
 from deepspeech_pytorch.testing import run_evaluation
 from deepspeech_pytorch.utils import check_loss
+from deepspeech_pytorch.aggregation import aggregation, distribution
 
 import copy
+import pdb
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -102,8 +104,29 @@ def train(cfg):
             tensorboard_logger.load_previous_values(state.epoch, state.results)
     else:
         # Initialise new model training
+
         with open(to_absolute_path(cfg.data.labels_path)) as label_file:
             labels = json.load(label_file)
+
+        n_E = 4
+        edge_model_list = []
+        for i in range(n_E):
+            if OmegaConf.get_type(cfg.model) is BiDirectionalConfig:
+                model = DeepSpeech(rnn_hidden_size=cfg.model.hidden_size,
+                                   nb_layers=cfg.model.hidden_layers,
+                                   labels=labels,
+                                   rnn_type=supported_rnns[cfg.model.rnn_type.value],
+                                   audio_conf=cfg.data.spect,
+                                   bidirectional=True)
+            elif OmegaConf.get_type(cfg.model) is UniDirectionalConfig:
+                model = DeepSpeech(rnn_hidden_size=cfg.model.hidden_size,
+                                   nb_layers=cfg.model.hidden_layers,
+                                   labels=labels,
+                                   rnn_type=supported_rnns[cfg.model.rnn_type.value],
+                                   audio_conf=cfg.data.spect,
+                                   bidirectional=False,
+                                   context=cfg.model.lookahead_context)
+            edge_model_list.append(model)
 
         if OmegaConf.get_type(cfg.model) is BiDirectionalConfig:
             model = DeepSpeech(rnn_hidden_size=cfg.model.hidden_size,
@@ -152,17 +175,17 @@ def train(cfg):
                                   num_workers=cfg.data.num_workers,
                                   batch_size=cfg.data.batch_size)
 
-    n_E = 4
-    edge_model_list = [copy.deepcopy(model) for i in range(n_E)]
     for i, edge_model in enumerate(edge_model_list):
         device_num = i % torch.cuda.device_count()
         edge_model.cuda(device_num)
-        print(f'model No:{i}, device No:{next(edge_model.parameters()).device}')
+        print(f'model Num:{i}, device Num:{next(edge_model.parameters()).device}')
     model = model.to(device)
+    print(f'central model at device:{next(model.parameters()).device}')
 
-    parameters = model.parameters()
+    # parameters = model.parameters()
     edge_optimizer_list = []
     for edge_model in edge_model_list:
+        parameters = edge_model.parameters()
         if OmegaConf.get_type(cfg.optim) is SGDConfig:
             optimizer = torch.optim.SGD(parameters,
                                         lr=cfg.optim.learning_rate,
@@ -242,13 +265,15 @@ def train(cfg):
                 end = time.time()
                 continue
             assert len(inputs_list) == n_E
-            assert len(inputs_sizes_list) == n_E
+            assert len(input_sizes_list) == n_E
             assert len(targets_list) == n_E
             assert len(target_sizes_list) == n_E
+            print('start training!')
 
             loss_list = []
             loss_value_list = []
             for inputs, input_sizes, targets, target_sizes, edge_model in zip(inputs_list, input_sizes_list, targets_list, target_sizes_list, edge_model_list):
+                print(device)
                 device = next(edge_model.parameters()).device
                 # To utilize default streams on different devices
                 with torch.cuda.device(device):
@@ -256,17 +281,30 @@ def train(cfg):
                     inputs = inputs.to(device)
                     targets = targets.to(device)
 
-                    out, output_sizes = model(inputs, input_sizes)
+                    out, output_sizes = edge_model(inputs, input_sizes)
+                    print('model')
                     out = out.transpose(0, 1)  # TxNxH
+                    print('transpose')
 
+                    pdb.set_trace()
+
+                    output_sizes = output_sizes.to(device)
+                    target_sizes = target_sizes.to(device)
                     float_out = out.float()  # ensure float32 for loss
+                    print('float')
+                    print(float_out.device, targets.device, output_sizes.device, target_sizes.device)
                     # loss = criterion(float_out, targets, output_sizes, target_sizes).to(device)
                     loss = criterion(float_out, targets, output_sizes, target_sizes)
+                    print('criterion')
                     loss = loss / inputs.size(0)  # average the loss by minibatch
+                    print('loss')
                     loss_value = loss.item()
+                    print('loss_value')
 
                     loss_list.append(loss)
+                    print('loss_list')
                     loss_value_list.append(loss_value)
+                    print('loss_value_list')
 
             loss_value_list_ = []
             for loss, loss_value, optimizer in zip(loss_list, loss_value_list, edge_optimizer_list):

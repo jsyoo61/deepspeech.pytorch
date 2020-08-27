@@ -42,29 +42,29 @@ def distribution(model_source, model_target):
             p_trg.data[:] = p_src.data.to(device)
 
 # %%
-class m(nn.Module):
-    def __init__(self):
-        super(m, self).__init__()
-        self.x = nn.Linear(10,10)
-# %%
-model_source = [m().cuda() for i in range(5)]
-model_target = m()
-for i, model in enumerate(model_source):
-    model.x.weight.data[:] = i
-# %%
-for model in model_source:
-    print(model.x.weight)
-print(model_target.x.weight.data)
-# %%
-aggregation(model_source, model_target)
-# %%
-print(model_target.x.weight.data)
-# %%
-distribution(model_target, model_source)
-# %%
-
-y.x.weight.data
-weight = None
-for i in zip([t.parameters() for t in model_source]):
-    print(i)
-torch.cuda.device_count()
+# class m(nn.Module):
+#     def __init__(self):
+#         super(m, self).__init__()
+#         self.x = nn.Linear(10,10)
+# # %%
+# model_source = [m().cuda() for i in range(5)]
+# model_target = m()
+# for i, model in enumerate(model_source):
+#     model.x.weight.data[:] = i
+# # %%
+# for model in model_source:
+#     print(model.x.weight)
+# print(model_target.x.weight.data)
+# # %%
+# aggregation(model_source, model_target)
+# # %%
+# print(model_target.x.weight.data)
+# # %%
+# distribution(model_target, model_source)
+# # %%
+#
+# y.x.weight.data
+# weight = None
+# for i in zip([t.parameters() for t in model_source]):
+#     print(i)
+# torch.cuda.device_count()
