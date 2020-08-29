@@ -246,6 +246,7 @@ def train(cfg):
         train_sampler.reset_training_step(training_step=state.training_step)
 
         distribution(model, edge_model_list)
+        # pdb.set_trace()
         inputs_list = []
         input_sizes_list = []
         targets_list = []
@@ -268,49 +269,44 @@ def train(cfg):
             assert len(input_sizes_list) == n_E
             assert len(targets_list) == n_E
             assert len(target_sizes_list) == n_E
-            print('start training!')
+            # print('start training!')
 
             loss_list = []
             loss_value_list = []
             for inputs, input_sizes, targets, target_sizes, edge_model in zip(inputs_list, input_sizes_list, targets_list, target_sizes_list, edge_model_list):
-                print(device)
+                # print(device)
                 device = next(edge_model.parameters()).device
                 # To utilize default streams on different devices
                 with torch.cuda.device(device):
-                    print(torch.cuda.current_stream())
+                    # print(torch.cuda.current_stream())
                     inputs = inputs.to(device)
-                    targets = targets.to(device)
+                    # targets = targets.to(device)
 
                     out, output_sizes = edge_model(inputs, input_sizes)
-                    print('model')
+                    # print('model')
                     out = out.transpose(0, 1)  # TxNxH
-                    print('transpose')
+                    # print('transpose')
 
-                    pdb.set_trace()
-
-                    output_sizes = output_sizes.to(device)
-                    target_sizes = target_sizes.to(device)
+                    # pdb.set_trace()
                     float_out = out.float()  # ensure float32 for loss
-                    print('float')
-                    print(float_out.device, targets.device, output_sizes.device, target_sizes.device)
-                    # loss = criterion(float_out, targets, output_sizes, target_sizes).to(device)
-                    loss = criterion(float_out, targets, output_sizes, target_sizes)
-                    print('criterion')
+                    # print('float')
+                    # print(float_out.device, targets.device, output_sizes.device, target_sizes.device)
+                    loss = criterion(float_out, targets, output_sizes, target_sizes).to(device)
+                    # print('criterion')
                     loss = loss / inputs.size(0)  # average the loss by minibatch
-                    print('loss')
+                    # print('loss')
                     loss_value = loss.item()
-                    print('loss_value')
+                    # print('loss_value')
 
                     loss_list.append(loss)
-                    print('loss_list')
+                    # print('loss_list')
                     loss_value_list.append(loss_value)
-                    print('loss_value_list')
+                    # print('loss_value_list')
 
             loss_value_list_ = []
             for loss, loss_value, optimizer in zip(loss_list, loss_value_list, edge_optimizer_list):
                 device = loss.device
                 with torch.cuda.device(device):
-                    print(torch.cuda.current_stream())
                     # Check to ensure valid loss was calculated
                     valid_loss, error = check_loss(loss, loss_value)
                     if valid_loss:
@@ -361,6 +357,7 @@ def train(cfg):
               'Time taken (s): {epoch_time:.0f}\t'
               'Average Loss {loss:.3f}\t'.format(epoch + 1, epoch_time=epoch_time, loss=state.avg_loss))
 
+        device = next(model.parameters()).device
         with torch.no_grad():
             wer, cer, output_data = run_evaluation(test_loader=test_loader,
                                                    device=device,
@@ -389,9 +386,10 @@ def train(cfg):
         if main_proc and cfg.checkpointing.checkpoint:  # Save epoch checkpoint
             checkpoint_handler.save_checkpoint_model(epoch=epoch, state=state)
         # anneal lr
-        for g in optimizer.param_groups:
-            g['lr'] = g['lr'] / cfg.optim.learning_anneal
-        print('Learning rate annealed to: {lr:.6f}'.format(lr=g['lr']))
+        for optimizer in edge_optimizer_list:
+            for g in optimizer.param_groups:
+                g['lr'] = g['lr'] / cfg.optim.learning_anneal
+            print('Learning rate annealed to: {lr:.6f}'.format(lr=g['lr']))
 
         if main_proc and (state.best_wer is None or state.best_wer > wer):
             checkpoint_handler.save_best_model(epoch=epoch, state=state)
