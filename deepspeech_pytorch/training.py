@@ -349,7 +349,7 @@ def train(cfg):
             target_sizes_list = []
 
         aggregation(edge_model_list, model)
-
+        # pdb.set_trace()
         state.avg_loss /= len(train_dataset)
 
         epoch_time = time.time() - start_epoch_time
@@ -363,7 +363,8 @@ def train(cfg):
                                                    device=device,
                                                    model=model,
                                                    decoder=evaluation_decoder,
-                                                   target_decoder=evaluation_decoder)
+                                                   target_decoder=evaluation_decoder,
+                                                   save_output='yes')
 
         state.add_results(epoch=epoch,
                           loss_result=state.avg_loss,
@@ -373,11 +374,12 @@ def train(cfg):
         print('Validation Summary Epoch: [{0}]\t'
               'Average WER {wer:.3f}\t'
               'Average CER {cer:.3f}\t'.format(epoch + 1, wer=wer, cer=cer))
-        with open('val_log.txt', 'a') as f:
+        with open('validation_log.txt', 'a') as f:
             f.write('Validation Summary Epoch: [{0}]\t'
                   'Average WER {wer:.3f}\t'
                   'Average CER {cer:.3f}\n'.format(epoch + 1, wer=wer, cer=cer))
-
+        save_pickle(output_data, 'output_data_'+str(epoch)+'.p')
+        # pdb.set_trace()
         if main_proc and cfg.visualization.visdom:
             visdom_logger.update(epoch, state.result_state)
         if main_proc and cfg.visualization.tensorboard:
