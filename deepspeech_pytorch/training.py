@@ -27,6 +27,7 @@ from deepspeech_pytorch.aggregation import aggregation, distribution
 
 import copy
 import pdb
+from tools import save_pickle
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -379,7 +380,7 @@ def train(cfg):
                   'Average WER {wer:.3f}\t'
                   'Average CER {cer:.3f}\n'.format(epoch + 1, wer=wer, cer=cer))
         save_pickle(output_data, 'output_data_'+str(epoch)+'.p')
-        # pdb.set_trace()
+        pdb.set_trace()
         if main_proc and cfg.visualization.visdom:
             visdom_logger.update(epoch, state.result_state)
         if main_proc and cfg.visualization.tensorboard:
